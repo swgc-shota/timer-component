@@ -1,5 +1,4 @@
-import van, { State } from 'vanjs-core';
-
+import van from 'vanjs-core';
 export const formatTime = (seconds: number): string => {
   const minutes = Math.floor(seconds / 60);
   const remainingSeconds = seconds % 60;
@@ -14,10 +13,9 @@ export const validateInitialMinutes = (seconds: number): void => {
   }
 };
 
-export type TimerStatus = 'ready' | 'running' | 'paused' | 'finished';
 interface CountdownTimer {
   start: () => void;
-  stop: (reason?: 'paused' | 'finished') => void;
+  stop: (reason: 'PAUSED' | 'FINISHED') => void;
   reset: () => void;
   toggle: () => void;
   getRemainingSeconds: () => number;
@@ -25,59 +23,114 @@ interface CountdownTimer {
   isFinished: () => boolean;
 }
 
-export const createCoundDownTimer = (
+type TimerAction =
+  | { type: 'READY' }
+  | { type: 'TICK' }
+  | { type: 'PAUSED' }
+  | { type: 'FINISHED' };
+
+interface TimerState {
+  remaining: number;
+  type: TimerAction['type'];
+  intervalId: number | null;
+}
+
+export const createCountdownTimer = (
   initialSeconds: number = 1,
-  initialStatus: TimerStatus = 'ready'
+  initialType: TimerAction['type'] = 'READY'
 ) => {
   validateInitialMinutes(initialSeconds);
 
-  let intervalId: number | null = null;
-  const remaining = van.state(initialSeconds) as State<number>;
-  const status = van.state(initialStatus) as State<TimerStatus>;
+  const state = van.state<TimerState>({
+    remaining: initialSeconds,
+    type: initialType,
+    intervalId: null,
+  });
 
-  const start = () => {
-    if (intervalId !== null || remaining.val <= 0) return;
-    status.val = 'running';
-    intervalId = window.setInterval(() => {
-      remaining.val > 0 ? remaining.val-- : stop('finished');
-    }, 1000);
+  const clearCurrentInterval = () => {
+    if (state.val.intervalId !== null) {
+      window.clearInterval(state.val.intervalId);
+    }
   };
 
-  const stop = (stopReason: 'paused' | 'finished' = 'paused') => {
-    if (intervalId === null) return;
-    window.clearInterval(intervalId);
-    intervalId = null;
-    status.val = stopReason;
+  const dispatch = (action: TimerAction) => {
+    const currentState = state.val;
+
+    switch (action.type) {
+      case 'TICK': {
+        if (currentState.type === 'TICK' || currentState.remaining <= 0) return;
+
+        clearCurrentInterval();
+        const newIntervalId = window.setInterval(() => {
+          const newRemaining = state.val.remaining - 1;
+          if (newRemaining <= 0) {
+            dispatch({ type: 'FINISHED' });
+          } else {
+            state.val = {
+              ...state.val,
+              remaining: newRemaining,
+            };
+          }
+        }, 1000);
+
+        state.val = {
+          ...currentState,
+          type: 'TICK',
+          intervalId: newIntervalId,
+        };
+        break;
+      }
+
+      case 'PAUSED':
+      case 'FINISHED': {
+        clearCurrentInterval();
+        state.val = {
+          ...currentState,
+          type: action.type,
+          intervalId: null,
+        };
+        break;
+      }
+
+      case 'READY': {
+        clearCurrentInterval();
+        state.val = {
+          remaining: initialSeconds,
+          type: 'READY',
+          intervalId: null,
+        };
+
+        break;
+      }
+
+      default: {
+        throw Error('Unknown action: ' + (action as TimerAction).type);
+      }
+    }
   };
 
-  const reset = () => {
-    stop();
-    remaining.val = initialSeconds;
-    status.val = 'ready';
+  const timer: CountdownTimer = {
+    start: () => dispatch({ type: 'TICK' }),
+    stop: (reason: 'PAUSED' | 'FINISHED' = 'PAUSED') =>
+      dispatch({ type: reason }),
+    reset: () => dispatch({ type: 'READY' }),
+    toggle: () => {
+      if (state.val.type === 'TICK') {
+        dispatch({ type: 'PAUSED' });
+      } else if (state.val.remaining > 0) {
+        dispatch({ type: 'TICK' });
+      }
+    },
+    getRemainingSeconds: () => state.val.remaining,
+    isRunning: () => state.val.type === 'TICK',
+    isFinished: () => state.val.type === 'FINISHED',
   };
 
-  const toggle = () => (status.val === 'running' ? stop() : start());
-  const getRemainingSeconds = (): number => remaining.val;
-  const isRunning = (): boolean => status.val === 'running';
-  const isFinished = (): boolean => status.val === 'finished';
-
-  if (initialStatus === 'running') {
-    intervalId = window.setInterval(() => {
-      remaining.val > 0 ? remaining.val-- : stop('finished');
-    }, 1000);
+  if (initialType === 'TICK') {
+    dispatch({ type: 'TICK' });
   }
 
-  return {
-    timer: {
-      start,
-      stop,
-      reset,
-      toggle,
-      getRemainingSeconds,
-      isRunning,
-      isFinished,
-    } as CountdownTimer,
-  };
+  return { timer };
 };
 
 const { div, button } = van.tags;
@@ -85,10 +138,11 @@ const { div, button } = van.tags;
 interface CountdownTimerProps {
   initialSeconds: number;
 }
+
 export const CountdownTimer = ({
   initialSeconds = 1500,
 }: CountdownTimerProps) => {
-  const { timer } = createCoundDownTimer(initialSeconds, 'running');
+  const { timer } = createCountdownTimer(initialSeconds, 'TICK');
   return button(
     {
       onclick: () => (timer.isFinished() ? timer.reset() : timer.toggle()),
